@@ -125,7 +125,10 @@ func URL2Address(pURL string) string {
 }
 
 func metricsURLs(address string) []url.URL {
-	u, _ := url.Parse(fmt.Sprintf("http://%s:%d", address, defaultMetricsPort))
+	u, _ := url.Parse(fmt.Sprintf("http://%s", address))
+	if u.Port() == "" {
+		u, _ = url.Parse(fmt.Sprintf("http://%s:%d", address, defaultMetricsPort))
+	}
 	return []url.URL{*u}
 }
 

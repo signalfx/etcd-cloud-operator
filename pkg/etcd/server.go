@@ -67,11 +67,12 @@ type ServerConfig struct {
 	clusterState string
 	initialPURLs map[string]string
 
-	// Optional Granular Peer and Client addresses
+	// Optional Granular Peer, Client, and Metrics addresses
 	LPAddress string
 	APAddress string
 	LCAddress string
 	ACAddress string
+	MAddress string
 }
 
 func (cfg *ServerConfig) ListenOnPeerAddress() string {
@@ -100,6 +101,13 @@ func (cfg *ServerConfig) AdvertisedClientAddress() string {
 		return cfg.ACAddress
 	}
 	return cfg.PublicAddress
+}
+
+func (cfg *ServerConfig) MetricsAddress() string {
+	if cfg.MAddress != "" {
+		return cfg.MAddress
+	}
+	return cfg.PrivateAddress
 }
 
 
@@ -368,7 +376,7 @@ func (c *Server) startServer(ctx context.Context) error {
 	etcdCfg.APUrls, _ = types.NewURLs([]string{peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
 	etcdCfg.LCUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.ListenOnClientAddress(), c.cfg.ClientSC.TLSEnabled())})
 	etcdCfg.ACUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.AdvertisedClientAddress(), c.cfg.ClientSC.TLSEnabled())})
-	etcdCfg.ListenMetricsUrls = metricsURLs(c.cfg.PrivateAddress)
+	etcdCfg.ListenMetricsUrls = metricsURLs(c.cfg.MetricsAddress())
 	etcdCfg.Metrics = "extensive"
 	etcdCfg.QuotaBackendBytes = c.cfg.DataQuota
 
