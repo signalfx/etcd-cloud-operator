@@ -111,8 +111,8 @@ func peerURL(address string, tlsEnabled bool) string {
 	return url
 }
 
-func URL2Components(url string) (string, string) {
-	pURL, _ := url.Parse(url)
+func URL2Components(inURL string) (string, string) {
+	pURL, _ := url.Parse(inURL)
 	return pURL.Hostname(), pURL.Port()
 }
 
