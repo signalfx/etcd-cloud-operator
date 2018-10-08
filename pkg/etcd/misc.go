@@ -95,11 +95,25 @@ func ClientsURLs(addresses []string, tlsEnabled bool) (cURLs []string) {
 }
 
 func ClientURL(address string, tlsEnabled bool) string {
-	return fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultClientPort)
+	url := fmt.Sprintf("%s://%s", scheme(tlsEnabled), address)
+	if _, port := URL2Components(url); port == "" {
+		url = fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultClientPort)
+	}
+	return url
+
 }
 
 func peerURL(address string, tlsEnabled bool) string {
-	return fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultPeerPort)
+	url := fmt.Sprintf("%s://%s", scheme(tlsEnabled), address)
+	if _, port := URL2Components(url); port == "" {
+		url = fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultPeerPort)
+	}
+	return url
+}
+
+func URL2Components(url string) (string, string) {
+	pURL, _ := url.Parse(url)
+	return pURL.Hostname(), pURL.Port()
 }
 
 func URL2Address(pURL string) string {
