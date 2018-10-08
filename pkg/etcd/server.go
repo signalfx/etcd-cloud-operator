@@ -66,7 +66,42 @@ type ServerConfig struct {
 	// Internal, used in startServer.
 	clusterState string
 	initialPURLs map[string]string
+
+	// Optional Granular Peer and Client addresses
+	LPAddress string
+	APAddress string
+	LCAddress string
+	ACAddress string
 }
+
+func (cfg *ServerConfig) ListenOnPeerAddress() string {
+	if cfg.LPAddress != "" {
+		return cfg.LPAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) AdvertisedPeerAddress() string {
+	if cfg.APAddress != "" {
+		return cfg.APAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) ListenOnClientAddress() string {
+	if cfg.LCAddress != "" {
+		return cfg.LCAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) AdvertisedClientAddress() string {
+	if cfg.ACAddress != "" {
+		return cfg.ACAddress
+	}
+	return cfg.PublicAddress
+}
+
 
 func NewServer(cfg ServerConfig) *Server {
 	return &Server{
@@ -89,7 +124,7 @@ func (c *Server) Seed(snapshot *snapshot.Metadata) error {
 
 	// Set the internal configuration.
 	c.cfg.clusterState = embed.ClusterStateFlagNew
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 
 	// Start the server.
 	ctx, cancel := context.WithTimeout(context.Background(), defaultStartTimeout)
@@ -108,7 +143,7 @@ func (c *Server) Join(cluster *Client) error {
 	}
 
 	// Set the internal configuration.
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 	for _, member := range members.Members {
 		if member.Name == "" {
 			continue
@@ -146,7 +181,7 @@ func (c *Server) Join(cluster *Client) error {
 	os.RemoveAll(c.cfg.DataDir)
 
 	// Add ourselves as a member.
-	memberID, unlock, err := cluster.AddMember(c.cfg.Name, []string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
+	memberID, unlock, err := cluster.AddMember(c.cfg.Name, []string{peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
 	if err != nil {
 		return fmt.Errorf("failed to add ourselves as a member of the cluster: %v", err)
 	}
@@ -188,7 +223,7 @@ func (c *Server) Restore(metadata *snapshot.Metadata) error {
 			" --initial-advertise-peer-urls %[3]s"+
 			" --data-dir %[5]s"+
 			" --skip-hash-check",
-			path, c.cfg.Name, peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled()),
+			path, c.cfg.Name, peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled()),
 			embed.NewConfig().InitialClusterToken, c.cfg.DataDir,
 		),
 	)
@@ -329,10 +364,10 @@ func (c *Server) startServer(ctx context.Context) error {
 	etcdCfg.ClientAutoTLS = c.cfg.ClientSC.AutoTLS
 	etcdCfg.ClientTLSInfo = c.cfg.ClientSC.TLSInfo()
 	etcdCfg.InitialCluster = initialCluster(c.cfg.initialPURLs)
-	etcdCfg.LPUrls, _ = types.NewURLs([]string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
-	etcdCfg.APUrls, _ = types.NewURLs([]string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
-	etcdCfg.LCUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.PrivateAddress, c.cfg.ClientSC.TLSEnabled())})
-	etcdCfg.ACUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.PublicAddress, c.cfg.ClientSC.TLSEnabled())})
+	etcdCfg.LPUrls, _ = types.NewURLs([]string{peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
+	etcdCfg.APUrls, _ = types.NewURLs([]string{peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
+	etcdCfg.LCUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.ListenOnClientAddress(), c.cfg.ClientSC.TLSEnabled())})
+	etcdCfg.ACUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.AdvertisedClientAddress(), c.cfg.ClientSC.TLSEnabled())})
 	etcdCfg.ListenMetricsUrls = metricsURLs(c.cfg.PrivateAddress)
 	etcdCfg.Metrics = "extensive"
 	etcdCfg.QuotaBackendBytes = c.cfg.DataQuota
@@ -433,7 +468,7 @@ func (c *Server) runMemberCleaner() {
 			}
 			log.Infof("removing member %q that's been unhealthy for %v", member.name, c.cfg.UnhealthyMemberTTL)
 
-			cl, err := NewClient([]string{c.cfg.PrivateAddress}, c.cfg.ClientSC, false)
+			cl, err := NewClient([]string{c.cfg.ListenOnClientAddress()}, c.cfg.ClientSC, false)
 			if err != nil {
 				log.WithError(err).Warn("failed to create etcd cluster client")
 				continue
