@@ -19,16 +19,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
-	etcdcl "github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/embed"
 	"github.com/coreos/etcd/pkg/types"
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc/grpclog"
 
 	"github.com/quentin-m/etcd-cloud-operator/pkg/providers/snapshot"
 	_ "github.com/quentin-m/etcd-cloud-operator/pkg/providers/snapshot/etcd"
@@ -43,9 +41,10 @@ const (
 )
 
 type Server struct {
-	server    *embed.Etcd
-	isRunning bool
-	cfg       ServerConfig
+	server        *embed.Etcd
+	isRunning     bool
+	isRunningLock sync.RWMutex
+	cfg           ServerConfig
 }
 
 type ServerConfig struct {
@@ -72,7 +71,7 @@ type ServerConfig struct {
 	APAddress string
 	LCAddress string
 	ACAddress string
-	MAddress string
+	MAddress  string
 }
 
 func (cfg *ServerConfig) ListenOnPeerAddress() string {
@@ -110,10 +109,10 @@ func (cfg *ServerConfig) MetricsAddress() string {
 	return cfg.PrivateAddress
 }
 
-
 func NewServer(cfg ServerConfig) *Server {
 	return &Server{
-		cfg: cfg,
+		isRunningLock: sync.RWMutex{},
+		cfg:           cfg,
 	}
 }
 
@@ -284,7 +283,7 @@ func (c *Server) SnapshotInfo() (*snapshot.Metadata, error) {
 	var localErr, cfgErr error
 
 	// Read snapshot info from the local etcd data, if etcd is not running (otherwise it'll get stuck).
-	if !c.isRunning {
+	if !c.IsRunning() {
 		localSnap, localErr = localSnapshotProvider(c.cfg.DataDir).Info()
 		if localErr != nil && localErr != snapshot.ErrNoSnapshot {
 			log.WithError(localErr).Warn("failed to retrieve local snapshot info")
@@ -338,11 +337,13 @@ func (c *Server) snapshot(minRevision int64) (io.ReadCloser, int64, error) {
 }
 
 func (c *Server) IsRunning() bool {
+	c.isRunningLock.RLock()
+	defer c.isRunningLock.RUnlock()
 	return c.isRunning
 }
 
 func (c *Server) Stop(graceful, snapshot bool) {
-	if !c.isRunning {
+	if !c.IsRunning() {
 		return
 	}
 	if snapshot {
@@ -355,7 +356,9 @@ func (c *Server) Stop(graceful, snapshot bool) {
 		c.server.Server = nil
 	}
 	c.server.Close()
+	c.isRunningLock.Lock()
 	c.isRunning = false
+	c.isRunningLock.Unlock()
 	return
 }
 
@@ -383,13 +386,12 @@ func (c *Server) startServer(ctx context.Context) error {
 	// Start the server.
 	c.server, err = embed.StartEtcd(etcdCfg)
 
-	// Discard the gRPC logs, as the embed server will set that regardless of what was set before (i.e. at startup).
-	etcdcl.SetLogger(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, os.Stderr))
-
 	if err != nil {
 		return fmt.Errorf("failed to start etcd: %s", err)
 	}
+	c.isRunningLock.Lock()
 	c.isRunning = true
+	c.isRunningLock.Unlock()
 
 	// Wait until the server announces its ready, or until the start timeout is exceeded.
 	//
@@ -421,7 +423,9 @@ func (c *Server) runErrorWatcher() {
 	select {
 	case <-c.server.Server.StopNotify():
 		log.Warnf("etcd server is stopping")
+		c.isRunningLock.Lock()
 		c.isRunning = false
+		c.isRunningLock.Unlock()
 		return
 	case <-c.server.Err():
 		log.Warnf("etcd server has crashed")
