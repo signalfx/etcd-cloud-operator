@@ -1,5 +1,7 @@
 // Copyright 2017 Quentin Machu & eco authors
 //
+// Modifications copyright (C) 2018 SignalFx, Inc.
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -95,11 +97,25 @@ func ClientsURLs(addresses []string, tlsEnabled bool) (cURLs []string) {
 }
 
 func ClientURL(address string, tlsEnabled bool) string {
-	return fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultClientPort)
+	url := fmt.Sprintf("%s://%s", scheme(tlsEnabled), address)
+	if _, port := URL2Components(url); port == "" {
+		url = fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultClientPort)
+	}
+	return url
+
 }
 
 func peerURL(address string, tlsEnabled bool) string {
-	return fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultPeerPort)
+	url := fmt.Sprintf("%s://%s", scheme(tlsEnabled), address)
+	if _, port := URL2Components(url); port == "" {
+		url = fmt.Sprintf("%s://%s:%d", scheme(tlsEnabled), address, defaultPeerPort)
+	}
+	return url
+}
+
+func URL2Components(inURL string) (string, string) {
+	pURL, _ := url.Parse(inURL)
+	return pURL.Hostname(), pURL.Port()
 }
 
 func URL2Address(pURL string) string {
@@ -111,7 +127,13 @@ func URL2Address(pURL string) string {
 }
 
 func metricsURLs(address string) []url.URL {
-	u, _ := url.Parse(fmt.Sprintf("http://%s:%d", address, defaultMetricsPort))
+	if address == "" {
+		return []url.URL{}
+	}
+	u, _ := url.Parse(fmt.Sprintf("http://%s", address))
+	if u.Port() == "" {
+		u, _ = url.Parse(fmt.Sprintf("http://%s:%d", address, defaultMetricsPort))
+	}
 	return []url.URL{*u}
 }
 

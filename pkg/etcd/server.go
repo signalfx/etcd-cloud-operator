@@ -1,5 +1,7 @@
 // Copyright 2017 Quentin Machu & eco authors
 //
+// Modifications copyright (C) 2018 SignalFx, Inc.
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -19,16 +21,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
-	etcdcl "github.com/coreos/etcd/clientv3"
 	"github.com/coreos/etcd/embed"
 	"github.com/coreos/etcd/pkg/types"
 	log "github.com/sirupsen/logrus"
-	"google.golang.org/grpc/grpclog"
 
 	"github.com/quentin-m/etcd-cloud-operator/pkg/providers/snapshot"
 	_ "github.com/quentin-m/etcd-cloud-operator/pkg/providers/snapshot/etcd"
@@ -43,9 +43,10 @@ const (
 )
 
 type Server struct {
-	server    *embed.Etcd
-	isRunning bool
-	cfg       ServerConfig
+	server        *embed.Etcd
+	isRunning     bool
+	isRunningLock sync.RWMutex
+	cfg           ServerConfig
 }
 
 type ServerConfig struct {
@@ -66,11 +67,54 @@ type ServerConfig struct {
 	// Internal, used in startServer.
 	clusterState string
 	initialPURLs map[string]string
+
+	// Optional Granular Peer, Client, and Metrics addresses
+	LPAddress string
+	APAddress string
+	LCAddress string
+	ACAddress string
+	MAddress  string
+}
+
+func (cfg *ServerConfig) ListenOnPeerAddress() string {
+	if cfg.LPAddress != "" {
+		return cfg.LPAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) AdvertisedPeerAddress() string {
+	if cfg.APAddress != "" {
+		return cfg.APAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) ListenOnClientAddress() string {
+	if cfg.LCAddress != "" {
+		return cfg.LCAddress
+	}
+	return cfg.PrivateAddress
+}
+
+func (cfg *ServerConfig) AdvertisedClientAddress() string {
+	if cfg.ACAddress != "" {
+		return cfg.ACAddress
+	}
+	return cfg.PublicAddress
+}
+
+func (cfg *ServerConfig) MetricsAddress() string {
+	if cfg.MAddress != "" {
+		return cfg.MAddress
+	}
+	return cfg.PrivateAddress
 }
 
 func NewServer(cfg ServerConfig) *Server {
 	return &Server{
-		cfg: cfg,
+		isRunningLock: sync.RWMutex{},
+		cfg:           cfg,
 	}
 }
 
@@ -89,7 +133,7 @@ func (c *Server) Seed(snapshot *snapshot.Metadata) error {
 
 	// Set the internal configuration.
 	c.cfg.clusterState = embed.ClusterStateFlagNew
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 
 	// Start the server.
 	ctx, cancel := context.WithTimeout(context.Background(), defaultStartTimeout)
@@ -108,7 +152,7 @@ func (c *Server) Join(cluster *Client) error {
 	}
 
 	// Set the internal configuration.
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 	for _, member := range members.Members {
 		if member.Name == "" {
 			continue
@@ -146,7 +190,7 @@ func (c *Server) Join(cluster *Client) error {
 	os.RemoveAll(c.cfg.DataDir)
 
 	// Add ourselves as a member.
-	memberID, unlock, err := cluster.AddMember(c.cfg.Name, []string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
+	memberID, unlock, err := cluster.AddMember(c.cfg.Name, []string{peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
 	if err != nil {
 		return fmt.Errorf("failed to add ourselves as a member of the cluster: %v", err)
 	}
@@ -188,7 +232,7 @@ func (c *Server) Restore(metadata *snapshot.Metadata) error {
 			" --initial-advertise-peer-urls %[3]s"+
 			" --data-dir %[5]s"+
 			" --skip-hash-check",
-			path, c.cfg.Name, peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled()),
+			path, c.cfg.Name, peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled()),
 			embed.NewConfig().InitialClusterToken, c.cfg.DataDir,
 		),
 	)
@@ -241,7 +285,7 @@ func (c *Server) SnapshotInfo() (*snapshot.Metadata, error) {
 	var localErr, cfgErr error
 
 	// Read snapshot info from the local etcd data, if etcd is not running (otherwise it'll get stuck).
-	if !c.isRunning {
+	if !c.IsRunning() {
 		localSnap, localErr = localSnapshotProvider(c.cfg.DataDir).Info()
 		if localErr != nil && localErr != snapshot.ErrNoSnapshot {
 			log.WithError(localErr).Warn("failed to retrieve local snapshot info")
@@ -295,11 +339,13 @@ func (c *Server) snapshot(minRevision int64) (io.ReadCloser, int64, error) {
 }
 
 func (c *Server) IsRunning() bool {
+	c.isRunningLock.RLock()
+	defer c.isRunningLock.RUnlock()
 	return c.isRunning
 }
 
 func (c *Server) Stop(graceful, snapshot bool) {
-	if !c.isRunning {
+	if !c.IsRunning() {
 		return
 	}
 	if snapshot {
@@ -312,7 +358,9 @@ func (c *Server) Stop(graceful, snapshot bool) {
 		c.server.Server = nil
 	}
 	c.server.Close()
+	c.isRunningLock.Lock()
 	c.isRunning = false
+	c.isRunningLock.Unlock()
 	return
 }
 
@@ -329,24 +377,23 @@ func (c *Server) startServer(ctx context.Context) error {
 	etcdCfg.ClientAutoTLS = c.cfg.ClientSC.AutoTLS
 	etcdCfg.ClientTLSInfo = c.cfg.ClientSC.TLSInfo()
 	etcdCfg.InitialCluster = initialCluster(c.cfg.initialPURLs)
-	etcdCfg.LPUrls, _ = types.NewURLs([]string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
-	etcdCfg.APUrls, _ = types.NewURLs([]string{peerURL(c.cfg.PrivateAddress, c.cfg.PeerSC.TLSEnabled())})
-	etcdCfg.LCUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.PrivateAddress, c.cfg.ClientSC.TLSEnabled())})
-	etcdCfg.ACUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.PublicAddress, c.cfg.ClientSC.TLSEnabled())})
-	etcdCfg.ListenMetricsUrls = metricsURLs(c.cfg.PrivateAddress)
-	etcdCfg.Metrics = "extensive"
+	etcdCfg.LPUrls, _ = types.NewURLs([]string{peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
+	etcdCfg.APUrls, _ = types.NewURLs([]string{peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())})
+	etcdCfg.LCUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.ListenOnClientAddress(), c.cfg.ClientSC.TLSEnabled())})
+	etcdCfg.ACUrls, _ = types.NewURLs([]string{ClientURL(c.cfg.AdvertisedClientAddress(), c.cfg.ClientSC.TLSEnabled())})
+	etcdCfg.ListenMetricsUrls = metricsURLs(c.cfg.MetricsAddress())
+	etcdCfg.Metrics = "basic"
 	etcdCfg.QuotaBackendBytes = c.cfg.DataQuota
 
 	// Start the server.
 	c.server, err = embed.StartEtcd(etcdCfg)
 
-	// Discard the gRPC logs, as the embed server will set that regardless of what was set before (i.e. at startup).
-	etcdcl.SetLogger(grpclog.NewLoggerV2(ioutil.Discard, ioutil.Discard, os.Stderr))
-
 	if err != nil {
 		return fmt.Errorf("failed to start etcd: %s", err)
 	}
+	c.isRunningLock.Lock()
 	c.isRunning = true
+	c.isRunningLock.Unlock()
 
 	// Wait until the server announces its ready, or until the start timeout is exceeded.
 	//
@@ -378,7 +425,9 @@ func (c *Server) runErrorWatcher() {
 	select {
 	case <-c.server.Server.StopNotify():
 		log.Warnf("etcd server is stopping")
+		c.isRunningLock.Lock()
 		c.isRunning = false
+		c.isRunningLock.Unlock()
 		return
 	case <-c.server.Err():
 		log.Warnf("etcd server has crashed")
@@ -433,7 +482,7 @@ func (c *Server) runMemberCleaner() {
 			}
 			log.Infof("removing member %q that's been unhealthy for %v", member.name, c.cfg.UnhealthyMemberTTL)
 
-			cl, err := NewClient([]string{c.cfg.PrivateAddress}, c.cfg.ClientSC, false)
+			cl, err := NewClient([]string{c.cfg.ListenOnClientAddress()}, c.cfg.ClientSC, false)
 			if err != nil {
 				log.WithError(err).Warn("failed to create etcd cluster client")
 				continue
