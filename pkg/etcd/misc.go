@@ -150,9 +150,8 @@ func metricsURLs(address string) []url.URL {
 func isEtcdMemberHealthy(address string, config SecurityConfig) bool {
 	// Determine if the member is healthy
 	cli, err := NewClient([]string{address}, config, false)
-	defer cli.Close()
-
 	if err == nil && cli.IsHealthy(5, 1*time.Second) {
+		cli.Close()
 		return true
 	}
 	return false
