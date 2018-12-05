@@ -133,7 +133,7 @@ func (c *Server) Seed(snapshot *snapshot.Metadata) error {
 
 	// Set the internal configuration.
 	c.cfg.clusterState = embed.ClusterStateFlagNew
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 
 	// Start the server.
 	ctx, cancel := context.WithTimeout(context.Background(), defaultStartTimeout)
@@ -152,7 +152,7 @@ func (c *Server) Join(cluster *Client) error {
 	}
 
 	// Set the internal configuration.
-	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.ListenOnPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
+	c.cfg.initialPURLs = map[string]string{c.cfg.Name: peerURL(c.cfg.AdvertisedPeerAddress(), c.cfg.PeerSC.TLSEnabled())}
 	for _, member := range members.Members {
 		if member.Name == "" {
 			continue
