@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -161,16 +162,24 @@ func (c *Server) Join(cluster *Client) error {
 	}
 	c.cfg.clusterState = embed.ClusterStateFlagExisting
 
+	// Verify whether we have local data that would allow us to rejoin.
+	data, localSnapErr := localSnapshotProvider(c.cfg.DataDir).Info()
+
 	// Check if we are listed as a member, and save the member ID if so.
 	var memberID uint64
 	for _, member := range members.Members {
 		if c.cfg.Name == member.Name {
+			if localSnapErr != nil || data == nil {
+				if isEtcdMemberHealthy(URL2Address(member.PeerURLs[0]), c.cfg.ClientSC){
+					return fmt.Errorf(
+						"server name '%s' is already in use in the cluster and configured with Advertised Peer Address: [%s], Advertised Client Address: [%s]",
+						c.cfg.Name, strings.Join(member.GetPeerURLs(), ","), strings.Join(member.GetClientURLs(), ","))
+				}
+			}
 			memberID = member.ID
 			break
 		}
 	}
-	// Verify whether we have local data that would allow us to rejoin.
-	_, localSnapErr := localSnapshotProvider(c.cfg.DataDir).Info()
 
 	// Attempt to re-join the server directly if we are still a member, and we have local data.
 	if memberID != 0 && localSnapErr == nil {
@@ -472,6 +481,10 @@ func (c *Server) runMemberCleaner() {
 		}
 
 		for id, member := range members {
+			if member.name == c.cfg.Name {
+				// don't clean up yourself if you're still running, let someone else do it if necessary
+				continue
+			}
 			// Give the member time to start if it's a new one.
 			if time.Since(member.firstSeen) < defaultStartTimeout && (member.lastSeenHealthy == time.Time{}) {
 				continue

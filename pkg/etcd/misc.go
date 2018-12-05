@@ -147,6 +147,17 @@ func metricsURLs(address string) []url.URL {
 	return []url.URL{*u}
 }
 
+func isEtcdMemberHealthy(address string, config SecurityConfig) bool {
+	// Determine if the member is healthy
+	cli, err := NewClient([]string{address}, config, false)
+	defer cli.Close()
+
+	if err == nil && cli.IsHealthy(5, 1*time.Second) {
+		return true
+	}
+	return false
+}
+
 func initialCluster(pURLs map[string]string) string {
 	var ic []string
 	for name, pURL := range pURLs {
