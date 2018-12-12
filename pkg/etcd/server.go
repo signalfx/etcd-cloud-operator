@@ -165,6 +165,11 @@ func (c *Server) Join(cluster *Client) error {
 	// Verify whether we have local data that would allow us to rejoin.
 	data, localSnapErr := localSnapshotProvider(c.cfg.DataDir).Info()
 
+	// name changes in the config invalidate previous data
+	if data != nil && data.Name != c.cfg.Name {
+		data = nil
+	}
+
 	// Check if we are listed as a member, and save the member ID if so.
 	var memberID uint64
 	for _, member := range members.Members {
