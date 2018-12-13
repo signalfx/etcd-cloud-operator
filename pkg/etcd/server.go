@@ -48,7 +48,11 @@ type Server struct {
 	server        *embed.Etcd
 	client 		  *Client
 	isRunning     bool
+	// isRunningLock protects attempts to query the isRunning
+	// boolean reflecting the status of the server
 	isRunningLock sync.RWMutex
+	// memberKeyLock protects operations against the server's cancelLease and client
+	// which may be replaced at anytime by addMember and refreshClientForServer
 	memberKeyLock sync.RWMutex
 	cfg           ServerConfig
 	cancelLease context.CancelFunc
